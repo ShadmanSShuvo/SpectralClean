@@ -11,7 +11,8 @@
   /benchmark.py          # DFT vs FFT timing
   /metrics.py             # SNR calc
   /main.py                # pipeline orchestration
-  /report/                 # plots + writeup
+  /app.py                 # Interactive Streamlit dashboard GUI
+  /report/                 # plots + writeup + temporary media
   ```
 - Decide test audio: record/find a clean speech `.wav`, plan synthetic noise injection (tone hum + Gaussian white noise)
 
@@ -49,8 +50,15 @@
 - **4.2 Final 4-panel figure**: noisy waveform, noisy spectrum (noise spikes visible), cleaned spectrum, restored waveform — this is the centerpiece figure for the report.
 - **4.3 Edge case checks**: silence segments, clipping, very short signals, filter over-aggressiveness (audible artifacts).
 
+## Phase 4.5 — Streamlit Interactive GUI
+**Goal:** design a real-time reactive user interface to visualize and tune the DSP parameters.
+
+- **4.5.1 Control Sidebar**: Sliders for Hum frequency (Hz), Hum amplitude, Gaussian white noise standard deviation ($\sigma$), low-pass cutoff frequency, notch bandwidth, and suppressed harmonics.
+- **4.5.2 Audio Player Verification**: Write separate WAV files to disk (`_tmp_noisy.wav`, `_tmp_denoised.wav`, `_tmp_clean.wav`) rather than passing raw in-memory bytes, to prevent Streamlit's caching engine from serving the same media blob.
+- **4.5.3 Real-time Plots**: Embed custom Matplotlib waveform, spectral, 4-panel, and complexity benchmark figures.
+
 ## Phase 5 — Report & Polish
-- Write up: theory recap (DFT/FFT math, filter design rationale), methodology, benchmark graph + discussion, SNR results, 4-panel figure, limitations
+- Write up: theory recap (DFT/FFT math, filter design rationale), methodology, benchmark graph + discussion, SNR results, 4-panel figure, limitations, Streamlit UI documentation
 - Code cleanup: docstrings, consistent naming, remove debug prints, final run-through end-to-end
 - Prepare for project update checkpoint and any viva — be ready to explain *why* FFT is faster (recursive halving) and *why* masking works (linearity of Fourier transform)
 
@@ -59,4 +67,6 @@
 **Agent/execution notes:**
 - Each phase is independently testable before moving on — don't let Phase 3 start until Phase 1–2 unit tests pass cleanly.
 - The benchmark (2.4) and the 4-panel figure (4.2) are the two highest-leverage deliverables for grading — prioritize polish there if time is short.
+- Ensure audio players are distinct in `app.py` by outputting to temp files.
+
 

@@ -37,6 +37,10 @@ python main.py
 
 # Standalone DFT vs FFT benchmark plot only
 python benchmark.py
+
+# To stop the app in a terminal, Ctrl+C the background task, or:
+pkill -f "streamlit run app.py"
+
 ```
 
 ## Constraints honoured

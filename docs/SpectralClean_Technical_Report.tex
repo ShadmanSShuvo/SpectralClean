@@ -362,7 +362,7 @@ To extend the system's capabilities and support interactive analysis, an interac
     \item \textbf{Dynamic UI Rendering:} 
     \begin{itemize}[noitemsep,topsep=0pt]
         \item \textit{Metric Callouts:} Displays instant quantitative metrics (SNR Before/After, delta SNR, final PSNR, and RMSE reduction) in highlighted KPI cards.
-        \item \textit{Audio Players:} Side-by-side HTML5 audio players allow the user to listen to the noisy and restored signals dynamically.
+        \item \textit{File-Based Audio Players:} Exposes three columns containing side-by-side HTML5 audio players for Noisy, Restored, and Clean Reference tracks. The audio signals are written to temporary WAV files on disk to bypass Streamlit's in-memory media caching limitations, preventing redundant playback issues.
         \item \textit{Interactive Plots:} Embeds the time-domain waveforms, frequency magnitude spectra, and optional 4-panel or execution benchmark graphs directly into the page.
     \end{itemize}
 \end{itemize}
