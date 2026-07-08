@@ -122,12 +122,24 @@ def make_clean_signal_cached(fs: float = 8000.0, duration: float = 3.0) -> tuple
     return sig.samples.tolist(), sig.fs
 
 
-def wav_bytes_from_signal(sig: Signal) -> bytes:
-    """Encode a Signal to in-memory WAV bytes for st.audio()."""
+def wav_bytes_from_signal(sig: Signal, normalise: bool = False) -> bytes:
+    """
+    Encode a Signal to in-memory WAV bytes for st.audio().
+
+    Parameters
+    ----------
+    sig       : Signal to encode
+    normalise : If True, peak-normalise to [-1, 1] before encoding.
+                Leave False (default) so the actual amplitude difference
+                between noisy and denoised signals is audible.
+    """
     from scipy.io import wavfile
     buf = io.BytesIO()
-    peak = np.max(np.abs(sig.samples))
-    data = sig.samples / (peak if peak > 0 else 1.0)
+    if normalise:
+        peak = np.max(np.abs(sig.samples))
+        data = sig.samples / (peak if peak > 0 else 1.0)
+    else:
+        data = sig.samples
     out = (np.clip(data, -1, 1) * 32767).astype(np.int16)
     wavfile.write(buf, int(sig.fs), out)
     return buf.getvalue()
