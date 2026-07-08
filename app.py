@@ -470,13 +470,33 @@ st.divider()
 st.markdown("### 🔊 Listen & Compare")
 st.caption(f"Source: {source_label}")
 
-ac1, ac2 = st.columns(2)
+ac1, ac2, ac3 = st.columns(3)
+
+# Streamlit's in-memory bytes media server can silently serve the same
+# cached audio blob for multiple st.audio() calls in one rerun.
+# Fix: write to distinct temp files on disk and pass file paths.
+import os, hashlib
+
+_tmp_dir = os.path.join(os.path.dirname(__file__), "report")
+os.makedirs(_tmp_dir, exist_ok=True)
+
+noisy_path    = os.path.join(_tmp_dir, "_tmp_noisy.wav")
+denoised_path = os.path.join(_tmp_dir, "_tmp_denoised.wav")
+clean_path    = os.path.join(_tmp_dir, "_tmp_clean.wav")
+
+to_wav(noisy_sig, noisy_path)
+to_wav(denoised_sig, denoised_path)
+to_wav(clean_sig, clean_path)
+
 with ac1:
-    st.markdown("**Noisy Audio**")
-    st.audio(wav_bytes_from_signal(noisy_sig), format="audio/wav")
+    st.markdown("**🔴 Noisy Audio**")
+    st.audio(noisy_path, format="audio/wav")
 with ac2:
-    st.markdown("**Restored Audio**")
-    st.audio(wav_bytes_from_signal(denoised_sig), format="audio/wav")
+    st.markdown("**🟢 Restored Audio**")
+    st.audio(denoised_path, format="audio/wav")
+with ac3:
+    st.markdown("**⚪ Clean Reference**")
+    st.audio(clean_path, format="audio/wav")
 
 st.divider()
 
