@@ -1,0 +1,24 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE and System Files
+.DS_Store
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# SpectralClean Outputs (ignore generated audio files, keep plots/docs if needed)
+report/*.wav
+# Uncomment the line below if you also want to ignore the generated plots
+# report/*.png
