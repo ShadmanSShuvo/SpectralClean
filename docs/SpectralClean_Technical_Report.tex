@@ -1,0 +1,381 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{caption}
+
+\definecolor{accent}{HTML}{0B5FA5}
+\definecolor{lightgray}{HTML}{F4F4F4}
+
+\hypersetup{colorlinks=true, linkcolor=accent, urlcolor=accent, citecolor=accent}
+
+\titleformat{\section}{\normalfont\Large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small SpectralClean --- Technical Report}
+\fancyhead[R]{\small CSE 220}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+
+\title{\vspace{-1.5cm}\textbf{SpectralClean}\\[0.3em]
+\Large Audio Restoration \& Analysis Studio\\[0.2em]
+\normalsize A From-Scratch DFT/FFT Denoising Pipeline}
+\author{CSE 220 --- Signals and Linear Systems Sessional}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\begin{abstract}
+\noindent
+This report documents \textbf{SpectralClean}, a fully from-scratch digital signal
+processing pipeline that restores a speech-like audio signal corrupted by mains
+hum and Gaussian white noise. Every core transform --- the Discrete Fourier
+Transform (DFT), the Radix-2 Cooley-Tukey Fast Fourier Transform (FFT), and its
+inverse (IFFT) --- is implemented directly from its mathematical definition, with
+no reliance on \texttt{numpy.fft} or \texttt{scipy.signal} in the processing
+pipeline. The system achieves a measured SNR improvement of
+\textbf{+10.31\,dB}, and a benchmark comparing the naive $O(N^2)$ DFT against
+the $O(N\log N)$ FFT confirms the theoretical complexity advantage empirically.
+\end{abstract}
+
+% ============================================================
+\section{Mathematical Foundations}
+% ============================================================
+
+\subsection{The Discrete Fourier Transform (Vectorised Matrix Form)}
+
+The DFT of a length-$N$ discrete signal $x[n]$ is defined as
+
+\begin{equation}
+X[k] = \sum_{n=0}^{N-1} x[n] \, e^{-j \frac{2\pi}{N} kn}, \qquad k = 0, 1, \dots, N-1.
+\label{eq:dft}
+\end{equation}
+
+Rather than evaluating Equation~\ref{eq:dft} with a nested loop, the
+implementation expresses it as a single matrix--vector product. Define the
+\emph{twiddle factor matrix} $W \in \mathbb{C}^{N \times N}$ with entries
+
+\begin{equation}
+W_{k,n} = e^{-j \frac{2\pi}{N} kn}, \qquad k,n = 0,\dots,N-1.
+\label{eq:twiddle-matrix}
+\end{equation}
+
+The full spectrum is then obtained in one vectorised operation:
+
+\begin{equation}
+\mathbf{X} = W\,\mathbf{x},
+\qquad \text{where } \mathbf{x} = \big[x[0], x[1], \dots, x[N-1]\big]^{\!\top}.
+\label{eq:dft-matrix-form}
+\end{equation}
+
+This retains the exact $O(N^2)$ arithmetic cost of the direct sum (every
+output bin still depends on every input sample) but replaces the explicit
+Python-level double loop with a NumPy matrix multiplication, giving a large
+constant-factor speedup while preserving mathematical transparency. A
+nested-loop version (`dft\_slow`) is retained separately purely to confirm,
+element-by-element, that the vectorised form computes the identical
+quantity.
+
+\subsection{Radix-2 Cooley-Tukey FFT: The Butterfly Recursion}
+
+The Cooley-Tukey algorithm exploits the fact that a length-$N$ DFT (with $N$
+a power of two) can be expressed in terms of two length-$N/2$ DFTs: one over
+the even-indexed samples and one over the odd-indexed samples.
+
+Split $x[n]$ into
+
+\begin{equation}
+e[m] = x[2m], \qquad o[m] = x[2m+1], \qquad m = 0, \dots, \tfrac{N}{2}-1,
+\end{equation}
+
+and let $E[k] = \text{DFT}\{e[m]\}$ and $O[k] = \text{DFT}\{o[m]\}$, each of
+length $N/2$. Substituting into Equation~\ref{eq:dft} and separating the sum
+into even and odd terms yields the \textbf{butterfly recursion}:
+
+\begin{align}
+X[k]           &= E[k] \; + \; W_N^{\,k}\, O[k], \label{eq:butterfly-top}\\
+X[k + N/2]     &= E[k] \; - \; W_N^{\,k}\, O[k], \qquad k = 0, \dots, \tfrac{N}{2}-1, \label{eq:butterfly-bottom}
+\end{align}
+
+where the \emph{twiddle factor} is
+
+\begin{equation}
+W_N^{\,k} = e^{-j \frac{2\pi}{N} k}.
+\label{eq:twiddle-scalar}
+\end{equation}
+
+Equations~\ref{eq:butterfly-top}--\ref{eq:butterfly-bottom} are applied
+recursively: $E[k]$ and $O[k]$ are themselves computed by recursing on
+half-length sub-sequences, bottoming out at the trivial base case $N=1$,
+where $\text{DFT}\{x[0]\} = x[0]$. Each level of recursion halves the
+problem size while doing $O(N)$ work to combine the two halves (the
+butterfly additions/subtractions), giving the overall
+$O(N \log_2 N)$ complexity. This is implemented as a direct recursive
+function operating on array slices \texttt{x[::2]} and \texttt{x[1::2]}.
+
+\emph{Constraint:} because the even/odd split requires $N$ to divide evenly
+by 2 at every recursion level, the algorithm requires $N = 2^p$ for some
+integer $p$. Signals of arbitrary length are zero-padded up to the next
+power of two before transformation.
+
+\subsection{Inverse FFT: The Conjugate Trick}
+
+Rather than deriving and implementing a second, independent inverse
+butterfly network, the inverse transform is obtained by reusing the
+forward FFT itself. The IDFT is defined as
+
+\begin{equation}
+x[n] = \frac{1}{N} \sum_{k=0}^{N-1} X[k] \, e^{+j \frac{2\pi}{N} kn}.
+\label{eq:idft}
+\end{equation}
+
+Taking the complex conjugate of both sides and comparing against
+Equation~\ref{eq:dft} shows that
+
+\begin{equation}
+x[n] = \frac{1}{N} \, \overline{\left( \sum_{k=0}^{N-1} \overline{X[k]} \, e^{-j\frac{2\pi}{N}kn} \right)}
+     = \frac{1}{N} \, \overline{\text{FFT}\big\{\overline{X[k]}\big\}}.
+\label{eq:conjugate-trick}
+\end{equation}
+
+In words: \emph{conjugate the spectrum, run the ordinary forward FFT on it,
+conjugate the result again, and divide by $N$.} This means no separate
+inverse butterfly implementation is needed --- the same recursive
+\texttt{fft()} routine, called twice with conjugation applied before and
+after, computes the IFFT exactly. For real-valued input signals, the
+imaginary part of the final result is numerically negligible
+($<10^{-10}$) and is discarded by taking the real part only.
+
+% ============================================================
+\section{Block Diagram: Pipeline Architecture}
+% ============================================================
+
+Figure~\ref{fig:block} shows the end-to-end signal flow implemented in
+\texttt{main.py}, from raw noisy input through to the restored output
+signal.
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{block_diagram.png}
+\caption{Denoising pipeline architecture. The signal is zero-padded to the
+next power of two to satisfy the Radix-2 FFT constraint, transformed to the
+frequency domain, filtered via multiplicative frequency-domain masks
+(band-stop notches at the hum fundamental and its harmonics, plus an
+optional low-pass cutoff), transformed back via the IFFT conjugate trick,
+and finally trimmed back to its original (pre-padding) length.}
+\label{fig:block}
+\end{figure}
+
+Each stage corresponds directly to a function in the codebase:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Stage} & \textbf{Implementation} \\
+\midrule
+Zero-Padding        & \texttt{zero\_pad\_to\_power2()} in \texttt{transforms.py} \\
+FFT                 & \texttt{fft()} --- recursive Cooley-Tukey, \texttt{transforms.py} \\
+Frequency Masking   & \texttt{band\_stop\_mask()}, \texttt{low\_pass\_mask()} in \texttt{filters.py} \\
+IFFT                & \texttt{ifft\_real()} --- conjugate trick, \texttt{transforms.py} \\
+Trimming            & slice to \texttt{original\_N} inside \texttt{apply\_spectral\_filter()} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ============================================================
+\section{Visual Data Presentation}
+% ============================================================
+
+\subsection{Four-Panel Restoration Overview}
+
+Figure~\ref{fig:fourpanel} is the centrepiece result figure, showing the
+corrupted signal before and after processing in both domains simultaneously.
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{four_panel.png}
+\caption{Panel~\textcircled{1}: noisy waveform in the time domain, showing
+high-frequency jitter from white noise superimposed on the speech envelope.
+Panel~\textcircled{2}: noisy magnitude spectrum zoomed to 0--1\,kHz, with
+dashed markers at the 50\,Hz hum fundamental and its harmonics, exactly
+where the sharp spikes appear. Panel~\textcircled{3}: the same spectral
+region after band-stop masking, where the hum spikes have been notched out.
+Panel~\textcircled{4}: the restored time-domain waveform overlaid against
+the ground-truth clean signal, showing close visual agreement.}
+\label{fig:fourpanel}
+\end{figure}
+
+\clearpage
+\subsection{Spectrum Comparison: Clean vs.\ Noisy vs.\ Denoised}
+
+Figure~\ref{fig:spectrum} places all three spectra side by side on a
+logarithmic magnitude scale across the full frequency range up to Nyquist,
+making the noise floor and its removal easier to compare quantitatively.
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{spectrum_comparison.png}
+\caption{Left: clean reference spectrum, confined mostly below $\sim$1.3\,kHz
+consistent with the synthesised speech formant structure. Centre: noisy
+spectrum, showing an elevated broadband noise floor from the injected
+Gaussian noise plus the hum spikes at low frequency. Right: denoised
+spectrum, where the noise floor above the low-pass cutoff (3.4\,kHz) has
+been suppressed and the hum spikes are removed, closely tracking the shape
+of the clean reference.}
+\label{fig:spectrum}
+\end{figure}
+
+\subsection{DFT vs. FFT Benchmark}
+
+Figure~\ref{fig:benchmark} compares the measured execution time of the
+naive $O(N^2)$ DFT against the Radix-2 FFT as a function of signal length
+$N$, alongside theoretical $O(N^2)$ and $O(N\log N)$ reference curves.
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{benchmark_dft_vs_fft.png}
+\caption{Log-log plot of execution time versus signal length $N$, from
+$N=2^4$ to $N=2^{14}$. The DFT curve is only measured up to $N=2^{11}$,
+beyond which its runtime becomes impractical to benchmark repeatedly. Both
+theoretical complexity curves are anchored to the measured data for visual
+comparison.}
+\label{fig:benchmark}
+\end{figure}
+
+\clearpage
+% ============================================================
+\section{Analysis \& Discussion}
+% ============================================================
+
+\subsection{The DFT/FFT Crossover Point}
+
+At very small $N$ (16--128 samples), the naive DFT is \emph{faster in wall-clock
+terms} than the recursive FFT, despite its worse asymptotic complexity. This is
+because the FFT's recursive Python function calls carry fixed overhead ---
+each level of recursion allocates new arrays, computes twiddle factors, and
+performs a function call --- while the DFT's vectorised matrix multiply is
+handled entirely inside NumPy's optimized C routines for these small sizes.
+For $N \le 128$, $N^2$ is simply too small a workload for the FFT's better
+asymptotic scaling to overcome this constant-factor overhead.
+
+The \textbf{crossover} occurs around $N \approx 256$, where the two curves
+intersect: at $N=256$ the FFT takes 1.67\,ms versus the DFT's 2.06\,ms, a
+roughly even match. Beyond this point the gap widens rapidly and
+monotonically, consistent with the theoretical ratio
+
+\begin{equation}
+\frac{T_{\text{FFT}}}{T_{\text{DFT}}} \;\sim\; \frac{N\log_2 N}{N^2} = \frac{\log_2 N}{N}.
+\end{equation}
+
+By $N=1024$ the FFT is already $5.6\times$ faster (6.78\,ms vs.\ 37.88\,ms), and
+at $N=2048$ --- the largest size at which the DFT remains practical to measure
+--- the FFT is $11.3\times$ faster (13.72\,ms vs.\ 154.85\,ms). Extrapolating
+the measured FFT trend to $N=2^{14}=16384$ (112.46\,ms) against a projected
+DFT time on the order of several seconds implies a crossover-relative
+speedup exceeding an order of magnitude, matching the benchmark plot's
+annotated theoretical advantage of roughly $14\times$ at that size. This
+empirically confirms the textbook result that Cooley-Tukey's divide-and-conquer
+structure becomes decisively superior once the signal length is large enough
+for the $\log_2 N$ factor to dominate the comparison.
+
+\subsection{Quantitative Denoising Performance}
+
+The denoising pipeline was evaluated against the known clean reference
+signal, since the corruption (hum + white noise) was synthetically
+injected with fully controlled parameters. Table~\ref{tab:metrics}
+summarises the measured improvement.
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Metric} & \textbf{Before} & \textbf{After} & \textbf{Change} \\
+\midrule
+SNR (dB)   & $+2.49$   & $+12.81$  & $+10.31$ \\
+PSNR (dB)  & $+11.87$  & $+22.18$  & $+10.31$ \\
+RMSE       & $0.2168$  & $0.0661$  & $-69.5\%$ \\
+\bottomrule
+\end{tabular}
+\caption{SNR, PSNR, and RMSE of the noisy and denoised signals relative to
+the clean ground truth.}
+\label{tab:metrics}
+\end{table}
+
+The headline result is a \textbf{+10.31\,dB improvement in Signal-to-Noise
+Ratio}. In linear power terms, a 10.31\,dB improvement corresponds to
+roughly a $10.7\times$ reduction in residual noise power relative to the
+signal, since
+
+\begin{equation}
+\Delta\text{SNR}_{\text{dB}} = 10 \log_{10}\!\left(\frac{P_{\text{noise, before}}}{P_{\text{noise, after}}}\right)
+\;\Rightarrow\;
+\frac{P_{\text{noise, before}}}{P_{\text{noise, after}}} = 10^{10.31/10} \approx 10.7.
+\end{equation}
+
+This is corroborated by the RMSE, which dropped from 0.2168 to 0.0661 ---
+a 69.5\% reduction in the root-mean-square deviation from the clean
+reference. The initial SNR of only $+2.49$\,dB reflects a signal that was
+barely distinguishable from its own noise floor (noise power close to
+signal power); after processing, $+12.81$\,dB represents a signal in which
+the reference is more than an order of magnitude stronger than the
+residual error.
+
+This improvement is attributable to two complementary mechanisms visible
+in Figure~\ref{fig:fourpanel}: (1)~the band-stop notches at 50, 100, 150,
+and 200\,Hz directly remove the four dominant hum harmonics visible as
+sharp spectral spikes, and (2)~the 3.4\,kHz low-pass cutoff suppresses the
+broadband high-frequency content of the Gaussian white noise, which
+--- unlike the speech-like clean signal, whose energy is concentrated
+below roughly 1.3\,kHz --- is spread uniformly across the entire spectrum.
+Because the clean signal's own energy lies almost entirely below the
+cutoff, this low-pass step removes a large fraction of noise power while
+discarding very little genuine signal energy, which is precisely why the
+SNR gain is so substantial without a correspondingly large distortion of
+the restored waveform (visible as close agreement in Panel~\textcircled{4}
+of Figure~\ref{fig:fourpanel}).
+
+\subsection{Interactive Streamlit Dashboard (app.py)}
+
+To extend the system's capabilities and support interactive analysis, an interactive graphical user interface (GUI) was implemented using Streamlit in \texttt{app.py}. The dashboard provides a fully reactive environment for real-time DSP tuning and parameter sweep validation.
+
+\begin{itemize}[noitemsep,topsep=0pt]
+    \item \textbf{Flexible Signal Input:} Supports either a user-uploaded custom \texttt{.wav} file via drag-and-drop or defaults to the built-in synthetic voiced speech signal generator.
+    \item \textbf{Control Sidebar:} Exposes all pipeline parameters via interactive sliders, including:
+    \begin{itemize}[noitemsep,topsep=0pt]
+        \item \textit{Noise parameters:} Hum fundamental frequency ($40\,\text{Hz}$ to $100\,\text{Hz}$), hum relative amplitude, Gaussian white noise standard deviation ($\sigma$), and number of injected harmonics.
+        \item \textit{Filter tuning:} Low-pass filter cutoff frequency ($1000\,\text{Hz}$ to $4000\,\text{Hz}$), notch bandwidth ($1\,\text{Hz}$ to $20\,\text{Hz}$), and the number of suppressed harmonics.
+    \end{itemize}
+    \item \textbf{Real-Time Processing Loop:} Streamlit's reactive execution model automatically triggers a clean rerun of the scratch FFT-based denoising pipeline upon any control interaction, providing instant visual feedback.
+    \item \textbf{Dynamic UI Rendering:} 
+    \begin{itemize}[noitemsep,topsep=0pt]
+        \item \textit{Metric Callouts:} Displays instant quantitative metrics (SNR Before/After, delta SNR, final PSNR, and RMSE reduction) in highlighted KPI cards.
+        \item \textit{Audio Players:} Side-by-side HTML5 audio players allow the user to listen to the noisy and restored signals dynamically.
+        \item \textit{Interactive Plots:} Embeds the time-domain waveforms, frequency magnitude spectra, and optional 4-panel or execution benchmark graphs directly into the page.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Summary}
+
+The system successfully demonstrates that scratch implementations of the
+DFT, Radix-2 FFT, and IFFT --- built directly from their mathematical
+definitions --- can be assembled into a complete, verifiably correct audio
+restoration pipeline. The benchmark confirms the expected $O(N^2)$ vs.\
+$O(N\log N)$ complexity crossover at $N \approx 256$, and the denoising
+pipeline achieves a substantial, quantitatively verified
+\textbf{+10.31\,dB SNR improvement}, validated independently through PSNR
+and RMSE metrics computed against the known clean reference signal.
+
+\end{document}

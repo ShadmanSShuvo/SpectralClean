@@ -13,8 +13,9 @@ filters.py       Phase 3.3      Band-stop / low-pass / high-pass masks
 metrics.py       Phase 4.1      SNR · PSNR · RMSE
 benchmark.py     Phase 2.4      DFT vs FFT timing benchmark
 main.py          Phase 3–4      Full pipeline (noise inject → denoise → figures)
+app.py           Phase 1–4      Interactive Streamlit dashboard frontend
 test_all.py      Phase 1–4      Unit-test suite
-requirements.txt               numpy · matplotlib · scipy (I/O only)
+requirements.txt               numpy · matplotlib · scipy (I/O only) · streamlit
 report/                        Output figures and .wav files
 ```
 
@@ -28,7 +29,10 @@ pip install -r requirements.txt
 # Run all unit tests first (47 assertions)
 python test_all.py
 
-# Run the full pipeline → generates report/*.wav + report/*.png
+# Run the interactive Streamlit dashboard
+streamlit run app.py
+
+# Run the terminal-based pipeline → generates report/*.wav + report/*.png
 python main.py
 
 # Standalone DFT vs FFT benchmark plot only
@@ -46,6 +50,7 @@ python benchmark.py
 | `metrics.py`     | NumPy                         | —                            |
 | `benchmark.py`   | NumPy + transforms.py         | —                            |
 | `main.py`        | All project modules           | —                            |
+| `app.py`         | All project modules + Streamlit| —                            |
 | `test_all.py`    | numpy.fft **for validation only** | —                        |
 
 `scipy.io.wavfile` is used **only** in `signal_core.from_wav` / `to_wav` for
