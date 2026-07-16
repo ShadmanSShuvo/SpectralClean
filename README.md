@@ -1,7 +1,12 @@
 # SpectralClean — Audio Restoration & Analysis Studio
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://spectralclean.streamlit.app)
+
+**Live Demo:** [https://spectralclean.streamlit.app](https://spectralclean.streamlit.app)
+
 A from-scratch DSP pipeline demonstrating DFT, FFT, convolution, and
 spectral denoising — **no `scipy.signal`, no `numpy.fft`** in the core pipeline.
+
 
 ## Repository structure
 
