@@ -314,6 +314,217 @@ except ValueError:
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  Phase 5.1 — Equalizer (IIR biquad)
+# ══════════════════════════════════════════════════════════════════════
+
+section("Phase 5.1 — Equalizer (IIR Biquad)")
+from effects import Equalizer, EQ_BANDS_HZ
+
+fs_eq = 8000.0
+
+# Flat EQ (all 0 dB gains) → signal unchanged
+flat_sig = Signal(np.sin(2 * np.pi * 440 * np.arange(512) / fs_eq), fs_eq)
+eq_flat = Equalizer.graphic_eq([0.0, 0.0, 0.0, 0.0, 0.0], fs_eq)
+out_flat = eq_flat.apply(flat_sig)
+check("EQ flat (0 dB all bands): output length preserved", out_flat.N == flat_sig.N)
+check("EQ flat (0 dB all bands): samples near-identical",
+      np.allclose(out_flat.samples, flat_sig.samples, atol=1e-6))
+
+# Peaking boost at 440 Hz → magnitude at 440 Hz increases
+t_eq = np.arange(2048) / fs_eq
+x_440 = np.sin(2 * np.pi * 440 * t_eq)
+sig_440 = Signal(x_440, fs_eq)
+eq_boost = Equalizer([('peaking', 440.0, +12.0, 1.0)], fs_eq)
+out_boost = eq_boost.apply(sig_440)
+check("EQ peaking +12 dB at 440 Hz: output RMS > input RMS",
+      np.sqrt(np.mean(out_boost.samples**2)) > np.sqrt(np.mean(x_440**2)))
+
+# Peaking cut at 440 Hz → magnitude decreases
+eq_cut = Equalizer([('peaking', 440.0, -12.0, 1.0)], fs_eq)
+out_cut = eq_cut.apply(sig_440)
+check("EQ peaking −12 dB at 440 Hz: output RMS < input RMS",
+      np.sqrt(np.mean(out_cut.samples**2)) < np.sqrt(np.mean(x_440**2)))
+
+# Wrong number of gains raises ValueError
+try:
+    Equalizer.graphic_eq([0.0, 0.0], fs_eq)
+    check("EQ: wrong gains count raises ValueError", False, "no exception")
+except ValueError:
+    check("EQ: wrong gains count raises ValueError", True)
+
+# Low-pass type: energy above cutoff attenuated
+freqs_above = np.sin(2 * np.pi * 3000 * np.arange(2048) / fs_eq)
+sig_hi = Signal(freqs_above, fs_eq)
+eq_lp = Equalizer([('lowpass', 500.0, 0.0, 0.707)], fs_eq)
+out_lp = eq_lp.apply(sig_hi)
+check("EQ lowpass: high-freq signal energy reduced",
+      np.sqrt(np.mean(out_lp.samples**2)) < np.sqrt(np.mean(freqs_above**2)) * 0.5)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Phase 5.2 — Echo / Delay
+# ══════════════════════════════════════════════════════════════════════
+
+section("Phase 5.2 — Echo / Delay")
+from effects import apply_echo
+
+fs_echo = 8000.0
+# Impulse response test: unit impulse at n=0 → echoes at M, 2M, …
+M = int(0.1 * fs_echo)   # 100 ms = 800 samples
+impulse_sig = Signal(np.concatenate([[1.0], np.zeros(5 * M - 1)]), fs_echo)
+g = 0.5
+echo_out = apply_echo(impulse_sig, delay_ms=100.0, feedback=g, wet=1.0)
+# At wet=1: mixed = 0*dry + 1*wet = wet signal
+# wet signal y[n] = x[n] + g*y[n-M], so y[0]=1, y[M]=g, y[2M]=g^2, ...
+# But mixed = (1-wet)*dry + wet*wet_y = wet_y when wet=1
+# Check: peak at sample 0 exists
+check("Echo impulse: peak at sample 0 exists",
+      abs(echo_out.samples[0]) > 0.4)
+
+# First echo at M samples: amplitude ≈ g  (within tolerance for comb filter)
+check("Echo impulse: first echo at M samples present",
+      abs(echo_out.samples[M]) > 0.1)
+
+# Successive echoes decay (y[2M] < y[M] in magnitude)
+check("Echo impulse: echoes decay (2nd < 1st)",
+      abs(echo_out.samples[2 * M]) <= abs(echo_out.samples[M]) + 1e-6)
+
+# feedback ≥ 1.0 raises ValueError
+try:
+    apply_echo(impulse_sig, feedback=1.0)
+    check("Echo: feedback=1.0 raises ValueError", False, "no exception")
+except ValueError:
+    check("Echo: feedback=1.0 raises ValueError", True)
+
+# wet=0 → output equals dry input exactly
+dry_only = apply_echo(impulse_sig, delay_ms=100.0, feedback=0.5, wet=0.0)
+check("Echo: wet=0 → output equals input",
+      np.allclose(dry_only.samples, impulse_sig.samples, atol=1e-10))
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Phase 5.3 — Reverb (Algorithmic + Convolution)
+# ══════════════════════════════════════════════════════════════════════
+
+section("Phase 5.3 — Reverb")
+from effects import apply_reverb, apply_convolution_reverb
+
+fs_rv = 8000.0
+imp_rv = Signal(np.concatenate([[1.0], np.zeros(4000 - 1)]), fs_rv)
+
+# Dry-only: wet=0 → output = input
+dry_rv = apply_reverb(imp_rv, room_size=0.5, wet=0.0)
+check("Reverb: wet=0 → output equals input",
+      np.allclose(dry_rv.samples, imp_rv.samples, atol=1e-10))
+
+# With reverb: output longer-tailed than input (RMS over tail > 0)
+wet_rv = apply_reverb(imp_rv, room_size=0.7, wet=0.8)
+tail_energy = np.sqrt(np.mean(wet_rv.samples[200:]**2))
+check("Reverb: tail energy > 0 after reverb applied",
+      tail_energy > 1e-4)
+
+# room_size out of range raises ValueError
+try:
+    apply_reverb(imp_rv, room_size=1.5)
+    check("Reverb: room_size > 1 raises ValueError", False, "no exception")
+except ValueError:
+    check("Reverb: room_size > 1 raises ValueError", True)
+
+# Convolution reverb: using a simple exponential decay as "RIR"
+t_rir = np.arange(400) / fs_rv
+rir_samples = np.exp(-10 * t_rir) * np.sin(2 * np.pi * 300 * t_rir)
+rir_sig = Signal(rir_samples, fs_rv)
+sine_in = Signal(np.sin(2 * np.pi * 300 * np.arange(800) / fs_rv), fs_rv)
+conv_rv = apply_convolution_reverb(sine_in, rir_sig, wet=0.5)
+check("Convolution reverb: output same length as input",
+      conv_rv.N == sine_in.N)
+check("Convolution reverb: output different from dry input",
+      not np.allclose(conv_rv.samples, sine_in.samples, atol=1e-6))
+
+# fs mismatch raises ValueError
+rir_wrong_fs = Signal(rir_samples, fs_rv * 2)
+try:
+    apply_convolution_reverb(sine_in, rir_wrong_fs, wet=0.5)
+    check("Convolution reverb: fs mismatch raises ValueError", False, "no exception")
+except ValueError:
+    check("Convolution reverb: fs mismatch raises ValueError", True)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Phase 5.4 — Spectral Subtraction
+# ══════════════════════════════════════════════════════════════════════
+
+section("Phase 5.4 — Spectral Subtraction")
+from effects import spectral_subtraction
+
+fs_ss = 8000.0
+duration_ss = 1.0
+N_ss = int(fs_ss * duration_ss)
+t_ss = np.arange(N_ss) / fs_ss
+
+# Build signal: silent noise prefix + clean tone
+noise_prefix = 0.2 * np.sin(2 * np.pi * 300 * t_ss[:int(0.2 * fs_ss)])  # dominant noise at 300 Hz
+signal_part  = np.sin(2 * np.pi * 1000 * t_ss[int(0.2 * fs_ss):])        # speech tone at 1 kHz
+noisy_ss = Signal(np.concatenate([noise_prefix, signal_part]), fs_ss)
+
+ss_out = spectral_subtraction(
+    noisy_ss,
+    noise_start_s=0.0,
+    noise_end_s=0.2,
+    over_subtraction=2.0,
+)
+check("Spectral subtraction: output same length as input", ss_out.N == noisy_ss.N)
+
+# Energy in the first 0.2 s (noise region) should be reduced
+noise_region_in  = np.sqrt(np.mean(noisy_ss.samples[:int(0.2 * fs_ss)]**2))
+noise_region_out = np.sqrt(np.mean(ss_out.samples[:int(0.2 * fs_ss)]**2))
+check("Spectral subtraction: noise region energy reduced",
+      noise_region_out < noise_region_in)
+
+# Silent input → output stays near-zero
+silence_ss = Signal(np.zeros(N_ss), fs_ss)
+ss_sil = spectral_subtraction(silence_ss)
+check("Spectral subtraction: silence in → silence out",
+      np.max(np.abs(ss_sil.samples)) < 1e-8)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Phase 5.5 — EffectChainConfig validation
+# ══════════════════════════════════════════════════════════════════════
+
+section("Phase 5.5 — EffectChainConfig validation")
+from signal_core import EffectChainConfig
+
+# Default config is valid (no exceptions)
+try:
+    cfg = EffectChainConfig()
+    check("EffectChainConfig: default config valid", True)
+except Exception as e:
+    check("EffectChainConfig: default config valid", False, str(e))
+
+# echo_feedback >= 1.0 raises ValueError
+try:
+    EffectChainConfig(echo_feedback=1.0)
+    check("EffectChainConfig: feedback=1.0 raises ValueError", False, "no exception")
+except ValueError:
+    check("EffectChainConfig: feedback=1.0 raises ValueError", True)
+
+# reverb_room_size > 1 raises ValueError
+try:
+    EffectChainConfig(reverb_room_size=1.5)
+    check("EffectChainConfig: room_size>1 raises ValueError", False, "no exception")
+except ValueError:
+    check("EffectChainConfig: room_size>1 raises ValueError", True)
+
+# eq_gains_db wrong length raises ValueError
+try:
+    EffectChainConfig(eq_gains_db=[0.0, 0.0])
+    check("EffectChainConfig: wrong EQ gains length raises ValueError", False, "no exception")
+except ValueError:
+    check("EffectChainConfig: wrong EQ gains length raises ValueError", True)
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Final report
 # ══════════════════════════════════════════════════════════════════════
 

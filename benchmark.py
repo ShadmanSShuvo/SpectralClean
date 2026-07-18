@@ -216,4 +216,124 @@ if __name__ == "__main__":
 
     results = run_benchmark(n_min_exp=4, n_max_exp=14, dft_max_exp=11)
     fig = plot_benchmark(results, save_path="report/benchmark_dft_vs_fft.png")
+
+    # Effects overhead benchmark
+    print("\nRunning effects overhead benchmark …")
+    eff_results = run_effects_benchmark()
+    fig_eff = plot_effects_benchmark(eff_results,
+                                     save_path="report/benchmark_effects.png")
     plt.show()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Effects overhead benchmark (new in v2)
+# ──────────────────────────────────────────────────────────────────────
+
+def run_effects_benchmark(
+    block_sizes: list = None,
+    repeats: int = 3,
+) -> dict:
+    """
+    Measure processing overhead of each v2 effect at increasing block sizes.
+
+    Parameters
+    ----------
+    block_sizes : list of sample counts to test (defaults to power-of-2 sizes)
+    repeats     : timing repetitions per cell (min is reported)
+
+    Returns
+    -------
+    dict with keys:
+        block_sizes — sizes tested
+        labels      — effect names
+        times       — dict {label: [time_ms, ...]}
+    """
+    from signal_core import Signal
+    from effects import (Equalizer, apply_echo, apply_reverb,
+                         spectral_subtraction)
+
+    if block_sizes is None:
+        block_sizes = [512, 1024, 4096, 8192, 16384]
+
+    FS = 8000.0
+    labels = ["EQ (5-band)", "Echo", "Reverb (algo)", "Spec. Sub."]
+    times = {lbl: [] for lbl in labels}
+
+    print(f"\n{'Block N':>10}  {'EQ':>12}  {'Echo':>12}  {'Reverb':>12}  {'Spec.Sub':>12}")
+    print("─" * 65)
+
+    for N in block_sizes:
+        rng = np.random.default_rng(1)
+        sig = Signal(rng.standard_normal(N), FS)
+
+        eq = Equalizer.graphic_eq([0, +3, -3, +3, 0], FS)
+
+        def t(fn):
+            best = float("inf")
+            for _ in range(repeats):
+                s = time.perf_counter()
+                fn()
+                best = min(best, time.perf_counter() - s)
+            return best * 1000  # ms
+
+        t_eq   = t(lambda: eq.apply(sig))
+        t_echo = t(lambda: apply_echo(sig, delay_ms=100.0, feedback=0.3))
+        t_rev  = t(lambda: apply_reverb(sig, room_size=0.5))
+        t_ss   = t(lambda: spectral_subtraction(sig))
+
+        times["EQ (5-band)"].append(t_eq)
+        times["Echo"].append(t_echo)
+        times["Reverb (algo)"].append(t_rev)
+        times["Spec. Sub."].append(t_ss)
+
+        print(f"{N:>10}  {t_eq:>10.2f}ms  {t_echo:>10.2f}ms"
+              f"  {t_rev:>10.2f}ms  {t_ss:>10.2f}ms")
+
+    return {"block_sizes": block_sizes, "labels": labels, "times": times}
+
+
+def plot_effects_benchmark(results: dict,
+                           save_path: str = None) -> plt.Figure:
+    """
+    Plot processing time vs block size for each v2 effect.
+    """
+    block_sizes = results["block_sizes"]
+    labels      = results["labels"]
+    times       = results["times"]
+
+    palette = ["#00E5FF", "#FF6B6B", "#69FF47", "#FFA726"]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.patch.set_facecolor("#0D1117")
+    ax.set_facecolor("#161B22")
+
+    for lbl, col in zip(labels, palette):
+        ax.semilogy(block_sizes, times[lbl], "o-",
+                    color=col, linewidth=2.0, markersize=6, label=lbl)
+
+    ax.set_xlabel("Block size N (samples)", color="#C9D1D9", fontsize=11)
+    ax.set_ylabel("Processing time (ms, log)", color="#C9D1D9", fontsize=11)
+    ax.set_title(
+        "SpectralClean v2 — Effects Overhead Benchmark\n"
+        "(manual NumPy implementations, no scipy.signal)",
+        color="white", fontsize=12, pad=10
+    )
+    ax.tick_params(colors="#C9D1D9")
+    for sp in ax.spines.values():
+        sp.set_edgecolor("#30363D")
+    ax.grid(True, which="both", color="#21262D", linestyle="--", alpha=0.5)
+    ax.legend(facecolor="#1C2128", edgecolor="#30363D",
+              labelcolor="#C9D1D9", fontsize=10)
+    ax.xaxis.set_major_formatter(
+        plt.FuncFormatter(lambda x, _: f"{int(x):,}")
+    )
+
+    plt.tight_layout()
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+        print(f"✓ Effects benchmark saved → {save_path}")
+
+    return fig

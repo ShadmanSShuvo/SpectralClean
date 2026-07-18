@@ -22,10 +22,11 @@ import matplotlib.gridspec as gridspec
 from pathlib import Path
 
 # ── Local modules ──────────────────────────────────────────────────────
-from signal_core import Signal, sine_wave, white_noise, to_wav
+from signal_core import Signal, sine_wave, white_noise, to_wav, EffectChainConfig
 from transforms import fft, zero_pad_to_power2, fft_frequencies, fft_magnitude
 from filters import denoise_combined, apply_spectral_filter, band_stop_mask
 from metrics import snr_improvement, print_metrics_report
+
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -267,6 +268,84 @@ def plot_spectrum_comparison(
                 facecolor=fig.get_facecolor())
     print(f"✓ Spectrum comparison saved → {save_path}")
     return fig
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Effect Chain Orchestrator (Phase 2 — v2)
+# ══════════════════════════════════════════════════════════════════════
+
+def run_effect_chain(sig: Signal, config: EffectChainConfig) -> Signal:
+    """
+    Apply the unified audio effect chain in fixed processing order:
+
+        1. Spectral Subtraction (advanced noise removal)
+        2. Equalizer (5-band graphic EQ)
+        3. Echo / Delay (feedback comb filter)
+        4. Reverb (algorithmic Schroeder or convolution)
+
+    Only enabled stages are applied. The signal passes through unchanged
+    for any disabled stage.
+
+    Parameters
+    ----------
+    sig    : input Signal (typically already hum-denoised by denoise_combined)
+    config : EffectChainConfig with all effect parameters and enable flags
+
+    Returns
+    -------
+    Signal — processed through all enabled effect stages
+    """
+    from effects import (
+        spectral_subtraction,
+        Equalizer,
+        apply_echo,
+        apply_reverb,
+        apply_convolution_reverb,
+    )
+
+    result = sig
+
+    # ── Stage 1: Spectral Subtraction ────────────────────────────────
+    if config.noise_removal:
+        result = spectral_subtraction(
+            result,
+            noise_start_s=config.noise_start_s,
+            noise_end_s=config.noise_end_s,
+            over_subtraction=config.noise_over_subtraction,
+        )
+
+    # ── Stage 2: Equalizer ───────────────────────────────────────────
+    if config.eq_enabled:
+        eq = Equalizer.graphic_eq(config.eq_gains_db, result.fs)
+        result = eq.apply(result)
+
+    # ── Stage 3: Echo / Delay ────────────────────────────────────────
+    if config.echo_enabled:
+        result = apply_echo(
+            result,
+            delay_ms=config.echo_delay_ms,
+            feedback=config.echo_feedback,
+            wet=config.echo_wet,
+        )
+
+    # ── Stage 4: Reverb ──────────────────────────────────────────────
+    if config.reverb_enabled:
+        if config.rir_signal is not None:
+            result = apply_convolution_reverb(
+                result,
+                rir=config.rir_signal,
+                wet=config.reverb_wet,
+            )
+        else:
+            result = apply_reverb(
+                result,
+                room_size=config.reverb_room_size,
+                damping=config.reverb_damping,
+                wet=config.reverb_wet,
+            )
+
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════

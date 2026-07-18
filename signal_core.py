@@ -8,6 +8,67 @@ Constraints: NumPy + Matplotlib only (no scipy.signal).
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Union
+from dataclasses import dataclass, field
+
+
+# ======================================================================
+# Effect Chain Configuration (Phase 2 — v2)
+# ======================================================================
+
+@dataclass
+class EffectChainConfig:
+    """
+    Parameter container for the unified audio effect chain.
+
+    Processing order (when enabled):
+        Noise Removal → Equalizer → Echo → Reverb
+
+    Validation runs in __post_init__ — raises ValueError on unsafe params.
+    """
+    # Spectral subtraction noise removal
+    noise_removal: bool = False
+    noise_start_s: float = 0.0
+    noise_end_s: float = 0.2
+    noise_over_subtraction: float = 1.0
+
+    # 5-band graphic EQ: gains in dB for [60, 230, 910, 4000, 14000] Hz
+    eq_enabled: bool = False
+    eq_gains_db: list = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0])
+
+    # Echo / Delay
+    echo_enabled: bool = False
+    echo_delay_ms: float = 200.0
+    echo_feedback: float = 0.30    # MUST be < 1.0
+    echo_wet: float = 0.50
+
+    # Algorithmic reverb
+    reverb_enabled: bool = False
+    reverb_room_size: float = 0.50  # 0–1
+    reverb_damping: float = 0.50    # 0–1
+    reverb_wet: float = 0.33
+
+    # Convolution reverb (overrides algorithmic when set)
+    rir_signal: object = None       # Signal or None
+
+    def __post_init__(self):
+        if self.echo_feedback >= 1.0:
+            raise ValueError(
+                f"echo_feedback must be < 1.0 to prevent instability, "
+                f"got {self.echo_feedback}"
+            )
+        if not (0.0 <= self.echo_wet <= 1.0):
+            raise ValueError(f"echo_wet must be in [0, 1], got {self.echo_wet}")
+        if not (0.0 <= self.reverb_room_size <= 1.0):
+            raise ValueError(
+                f"reverb_room_size must be in [0, 1], got {self.reverb_room_size}"
+            )
+        if not (0.0 <= self.reverb_wet <= 1.0):
+            raise ValueError(f"reverb_wet must be in [0, 1], got {self.reverb_wet}")
+        if len(self.eq_gains_db) != 5:
+            raise ValueError(
+                f"eq_gains_db must have exactly 5 values (one per EQ band), "
+                f"got {len(self.eq_gains_db)}"
+            )
 
 
 class Signal:

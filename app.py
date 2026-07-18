@@ -21,10 +21,11 @@ import matplotlib.gridspec as gridspec
 import streamlit as st
 
 # ── Project modules ───────────────────────────────────────────────────
-from signal_core import Signal, to_wav
+from signal_core import Signal, to_wav, EffectChainConfig
 from filters import denoise_combined
 from transforms import fft, zero_pad_to_power2, fft_frequencies, fft_magnitude
 from metrics import snr_improvement
+from main import run_effect_chain
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -373,6 +374,96 @@ with st.sidebar:
     )
 
     st.divider()
+
+    # ── Effects Chain ─────────────────────────────────────────────────
+    st.markdown('<div class="section-header">🎛️ Effects Chain</div>', unsafe_allow_html=True)
+
+    # Advanced Noise Removal
+    adv_noise_removal = st.checkbox(
+        "Advanced Noise Removal (Spectral Subtraction)",
+        value=False,
+        help="STFT-based spectral subtraction — profiles noise from a quiet segment "
+             "and subtracts it from all frames. More aggressive than mask filtering."
+    )
+    if adv_noise_removal:
+        nr_end = st.slider(
+            "Noise Profile Window (s)", min_value=0.05, max_value=0.5,
+            value=0.2, step=0.05,
+            help="Duration of the initial silent segment used to profile the noise."
+        )
+        nr_alpha = st.slider(
+            "Over-subtraction Factor", min_value=0.5, max_value=3.0,
+            value=1.0, step=0.1,
+            help="Scale the subtracted noise profile. >1.0 is more aggressive."
+        )
+    else:
+        nr_end = 0.2
+        nr_alpha = 1.0
+
+    st.markdown("")
+
+    # Equalizer
+    with st.expander("🎚️ Equalizer (5-Band)", expanded=False):
+        eq_enabled = st.checkbox("Enable EQ", value=False, key="eq_on")
+        st.caption("Band gains in dB (−12 to +12). 0 = flat.")
+        eq_col1, eq_col2 = st.columns(2)
+        with eq_col1:
+            eq_60   = st.slider("60 Hz",   -12, 12, 0, disabled=not eq_enabled, key="eq60")
+            eq_230  = st.slider("230 Hz",  -12, 12, 0, disabled=not eq_enabled, key="eq230")
+            eq_910  = st.slider("910 Hz",  -12, 12, 0, disabled=not eq_enabled, key="eq910")
+        with eq_col2:
+            eq_4k   = st.slider("4 kHz",   -12, 12, 0, disabled=not eq_enabled, key="eq4k")
+            eq_14k  = st.slider("14 kHz",  -12, 12, 0, disabled=not eq_enabled, key="eq14k")
+        eq_gains = [float(eq_60), float(eq_230), float(eq_910), float(eq_4k), float(eq_14k)]
+
+    # Echo / Delay
+    with st.expander("🔁 Echo / Delay", expanded=False):
+        echo_enabled = st.checkbox("Enable Echo", value=False, key="echo_on")
+        echo_delay = st.slider(
+            "Delay Time (ms)", 10, 800, 200, disabled=not echo_enabled, key="echo_delay"
+        )
+        echo_feedback = st.slider(
+            "Feedback", 0.0, 0.9, 0.3, step=0.05, disabled=not echo_enabled, key="echo_fb",
+            help="Echo decay gain. Must be < 1.0 to remain stable."
+        )
+        echo_wet = st.slider(
+            "Wet Mix", 0.0, 1.0, 0.5, step=0.05, disabled=not echo_enabled, key="echo_wet"
+        )
+
+    # Reverb
+    with st.expander("🏛️ Reverb / Room Acoustics", expanded=False):
+        reverb_enabled = st.checkbox("Enable Reverb", value=False, key="rev_on")
+        reverb_mode = st.radio(
+            "Reverb Type",
+            ["Algorithmic (Schroeder)", "Convolution (RIR)"],
+            disabled=not reverb_enabled, key="rev_mode"
+        )
+        room_size = st.slider(
+            "Room Size", 0.0, 1.0, 0.5, step=0.05,
+            disabled=not reverb_enabled, key="room_size",
+            help="Controls comb filter feedback. Larger = longer reverb tail."
+        )
+        reverb_damping = st.slider(
+            "Damping", 0.0, 1.0, 0.5, step=0.05,
+            disabled=(not reverb_enabled or reverb_mode != "Algorithmic (Schroeder)"),
+            key="rev_damp",
+            help="High-frequency absorption inside the reverb loop."
+        )
+        reverb_wet = st.slider(
+            "Wet Mix", 0.0, 1.0, 0.33, step=0.05,
+            disabled=not reverb_enabled, key="rev_wet"
+        )
+        rir_file = None
+        if reverb_enabled and reverb_mode == "Convolution (RIR)":
+            rir_file = st.file_uploader(
+                "Upload RIR .wav file", type=["wav"],
+                key="rir_upload",
+                help="Room Impulse Response file. Your audio will be convolved with this RIR."
+            )
+            if rir_file is None:
+                st.caption("ℹ️ No RIR uploaded — falling back to algorithmic reverb.")
+
+    st.divider()
     st.markdown('<div class="section-header">Visualisation</div>', unsafe_allow_html=True)
     show_4panel = st.checkbox("Show 4-Panel Analysis Figure", value=False)
     show_benchmark = st.checkbox("Show DFT vs FFT Benchmark", value=False)
@@ -419,7 +510,7 @@ with st.spinner("Processing signal…"):
     else:
         noisy_sig = clean_sig   # pass-through (filter still applied)
 
-    # Step 3 — Denoise
+    # Step 3 — Denoise (hum mask)
     denoised_sig = denoise_combined(
         noisy_sig,
         hum_freq_hz=float(hum_freq),
@@ -428,7 +519,32 @@ with st.spinner("Processing signal…"):
         lowpass_cutoff_hz=float(lp_cutoff),
     )
 
-    # Step 4 — Metrics
+    # Step 4 — Effects Chain
+    # Build RIR signal if a file was uploaded
+    rir_sig = None
+    if reverb_enabled and reverb_mode == "Convolution (RIR)" and rir_file is not None:
+        rir_file.seek(0)
+        rir_sig = load_uploaded_wav(rir_file)
+
+    fx_config = EffectChainConfig(
+        noise_removal=adv_noise_removal,
+        noise_end_s=float(nr_end),
+        noise_over_subtraction=float(nr_alpha),
+        eq_enabled=eq_enabled,
+        eq_gains_db=eq_gains,
+        echo_enabled=echo_enabled,
+        echo_delay_ms=float(echo_delay),
+        echo_feedback=float(echo_feedback),
+        echo_wet=float(echo_wet),
+        reverb_enabled=reverb_enabled,
+        reverb_room_size=float(room_size),
+        reverb_damping=float(reverb_damping),
+        reverb_wet=float(reverb_wet),
+        rir_signal=rir_sig,
+    )
+    effects_sig = run_effect_chain(denoised_sig, fx_config)
+
+    # Step 5 — Metrics
     metrics = snr_improvement(clean_sig, noisy_sig, denoised_sig)
 
 
@@ -470,7 +586,6 @@ st.divider()
 st.markdown("### 🔊 Listen & Compare")
 st.caption(f"Source: {source_label}")
 
-ac1, ac2, ac3 = st.columns(3)
 
 # Streamlit's in-memory bytes media server can silently serve the same
 # cached audio blob for multiple st.audio() calls in one rerun.
@@ -483,10 +598,14 @@ os.makedirs(_tmp_dir, exist_ok=True)
 noisy_path    = os.path.join(_tmp_dir, "_tmp_noisy.wav")
 denoised_path = os.path.join(_tmp_dir, "_tmp_denoised.wav")
 clean_path    = os.path.join(_tmp_dir, "_tmp_clean.wav")
+effects_path  = os.path.join(_tmp_dir, "_tmp_effects.wav")
 
 to_wav(noisy_sig, noisy_path)
 to_wav(denoised_sig, denoised_path)
 to_wav(clean_sig, clean_path)
+to_wav(effects_sig, effects_path)
+
+ac1, ac2, ac3, ac4 = st.columns(4)
 
 with ac1:
     st.markdown("**🔴 Noisy Audio**")
@@ -495,6 +614,9 @@ with ac2:
     st.markdown("**🟢 Restored Audio**")
     st.audio(denoised_path, format="audio/wav")
 with ac3:
+    st.markdown("**🎛️ Effects Output**")
+    st.audio(effects_path, format="audio/wav")
+with ac4:
     st.markdown("**⚪ Clean Reference**")
     st.audio(clean_path, format="audio/wav")
 
